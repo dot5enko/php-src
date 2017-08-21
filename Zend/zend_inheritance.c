@@ -1040,6 +1040,7 @@ ZEND_API void zend_do_implement_interface(zend_class_entry *ce, zend_class_entry
 		} ZEND_HASH_FOREACH_END();
 
 		ZEND_HASH_FOREACH_STR_KEY_PTR(&iface->function_table, key, func) {
+                    printf("TESTTSTETST\n");
 			zend_function *new_func = do_inherit_method(key, func, ce);
 
 			if (new_func) {

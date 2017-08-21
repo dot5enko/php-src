@@ -254,7 +254,7 @@ ZEND_API int zend_register_ini_entries(const zend_ini_entry_def *ini_entry, int 
 		}
 		if (((default_value = zend_get_configuration_directive(p->name)) != NULL) &&
             (!p->on_modify || p->on_modify(p, Z_STR_P(default_value), p->mh_arg1, p->mh_arg2, p->mh_arg3, ZEND_INI_STAGE_STARTUP) == SUCCESS)) {
-
+                    printf("going to copy some str\n");
 			p->value = zend_string_copy(Z_STR_P(default_value));
 		} else {
 			p->value = ini_entry->value ?

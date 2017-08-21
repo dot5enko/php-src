@@ -746,7 +746,7 @@ static inline void zend_end_loop(int cont_addr, const znode *var_node) /* {{{ */
 /* }}} */
 
 void zend_do_free(znode *op1) /* {{{ */
-{
+{       
 	if (op1->op_type == IS_TMP_VAR) {
 		zend_op *opline = &CG(active_op_array)->opcodes[CG(active_op_array)->last-1];
 
@@ -1693,6 +1693,7 @@ ZEND_API void zend_activate_auto_globals(void) /* {{{ */
 	zend_auto_global *auto_global;
 
 	ZEND_HASH_FOREACH_PTR(CG(auto_globals), auto_global) {
+            
 		if (auto_global->jit) {
 			auto_global->armed = 1;
 		} else if (auto_global->auto_global_callback) {
@@ -1977,7 +1978,7 @@ static void zend_adjust_for_fetch_type(zend_op *opline, uint32_t type) /* {{{ */
 /* }}} */
 
 static inline void zend_make_var_result(znode *result, zend_op *opline) /* {{{ */
-{
+{   
 	opline->result_type = IS_VAR;
 	opline->result.var = get_temporary_variable(CG(active_op_array));
 	GET_NODE(result, opline->result);
@@ -2562,7 +2563,9 @@ static void zend_compile_class_ref_ex(znode *result, zend_ast *name_ast, uint32_
 	fetch_type = zend_get_class_fetch_type(zend_ast_get_str(name_ast));
 	if (ZEND_FETCH_CLASS_DEFAULT == fetch_type) {
 		result->op_type = IS_CONST;
-		ZVAL_STR(&result->u.constant, zend_resolve_class_name_ast(name_ast));
+                zend_string* n = zend_resolve_class_name_ast(name_ast);
+                printf("creating instance of `%s`",n->val);
+		ZVAL_STR(&result->u.constant, n);
 	} else {
 		zend_ensure_valid_class_fetch_type(fetch_type);
 		result->op_type = IS_UNUSED;
@@ -2590,7 +2593,6 @@ static int zend_try_compile_cv(znode *result, zend_ast *ast) /* {{{ */
 
 		return SUCCESS;
 	}
-
 	return FAILURE;
 }
 /* }}} */
@@ -3245,7 +3247,7 @@ uint32_t zend_compile_args(zend_ast *ast, zend_function *fbc) /* {{{ */
 /* }}} */
 
 ZEND_API zend_uchar zend_get_call_op(const zend_op *init_op, zend_function *fbc) /* {{{ */
-{
+{      
 	if (fbc) {
 		if (fbc->type == ZEND_INTERNAL_FUNCTION) {
 			if (init_op->opcode == ZEND_INIT_FCALL && !zend_execute_internal) {
@@ -3266,6 +3268,8 @@ ZEND_API zend_uchar zend_get_call_op(const zend_op *init_op, zend_function *fbc)
 	            init_op->opcode == ZEND_INIT_NS_FCALL_BY_NAME)) {
 		return ZEND_DO_FCALL_BY_NAME;
 	}
+            printf("zend_get_call_op\n");
+        
 	return ZEND_DO_FCALL;
 }
 /* }}} */
@@ -4137,7 +4141,8 @@ void zend_compile_static_call(znode *result, zend_ast *ast, uint32_t type) /* {{
 void zend_compile_class_decl(zend_ast *ast);
 
 void zend_compile_new(znode *result, zend_ast *ast) /* {{{ */
-{
+{       
+    
 	zend_ast *class_ast = ast->child[0];
 	zend_ast *args_ast = ast->child[1];
 
@@ -4145,7 +4150,7 @@ void zend_compile_new(znode *result, zend_ast *ast) /* {{{ */
 	zend_op *opline;
 	uint32_t opnum;
 
-	if (class_ast->kind == ZEND_AST_CLASS) {
+	if (class_ast->kind == ZEND_AST_CLASS) {            
 		uint32_t dcl_opnum = get_next_op_number(CG(active_op_array));
 		zend_compile_class_decl(class_ast);
 		/* jump over anon class declaration */
@@ -4157,7 +4162,8 @@ void zend_compile_new(znode *result, zend_ast *ast) /* {{{ */
 		class_node.u.op.var = opline->result.var;
 		opline->extended_value = get_next_op_number(CG(active_op_array));
 	} else {
-		zend_compile_class_ref_ex(&class_node, class_ast, ZEND_FETCH_CLASS_EXCEPTION);
+            printf("compiling new :not(ZEND_AST_CLASS)\n");
+            zend_compile_class_ref_ex(&class_node, class_ast, ZEND_FETCH_CLASS_EXCEPTION);
 	}
 
 	opnum = get_next_op_number(CG(active_op_array));
@@ -4203,7 +4209,7 @@ void zend_compile_global_var(zend_ast *ast) /* {{{ */
 	if (name_node.op_type == IS_CONST) {
 		convert_to_string(&name_node.u.constant);
 	}
-
+        
 	if (is_this_fetch(var_ast)) {
 		zend_error_noreturn(E_COMPILE_ERROR, "Cannot use $this as global variable");
 	} else if (zend_try_compile_cv(&result, var_ast) == SUCCESS) {
@@ -8321,7 +8327,7 @@ void zend_compile_expr(znode *result, zend_ast *ast) /* {{{ */
 void zend_compile_var(znode *result, zend_ast *ast, uint32_t type) /* {{{ */
 {
 	CG(zend_lineno) = zend_ast_get_lineno(ast);
-
+        
 	switch (ast->kind) {
 		case ZEND_AST_VAR:
 			zend_compile_simple_var(result, ast, type, 0);

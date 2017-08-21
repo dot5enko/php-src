@@ -1488,6 +1488,9 @@ ZEND_API int zend_execute_scripts(int type, zval *retval, int file_count, ...) /
 		zend_destroy_file_handle(file_handle);
 		if (op_array) {
 			zend_execute(op_array, retval);
+                        
+                        printf("execution is finished\n");
+                        
 			zend_exception_restore();
 			zend_try_exception_handler();
 			if (EG(exception)) {

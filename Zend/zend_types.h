@@ -233,6 +233,13 @@ typedef struct _Bucket {
 
 typedef struct _zend_array HashTable;
 
+typedef struct _CompactNode {
+    zval val;
+    zend_string *key;
+    uint32_t isNumeric;
+    zend_ulong longkey;
+} CompactNode;
+
 struct _zend_array {
 	zend_refcounted_h gc;
 	union {
@@ -253,6 +260,9 @@ struct _zend_array {
 	uint32_t          nInternalPointer;
 	zend_long         nNextFreeElement;
 	dtor_func_t       pDestructor;
+//        uint32_t compact;
+        
+        CompactNode *compactValues;
 };
 
 /*

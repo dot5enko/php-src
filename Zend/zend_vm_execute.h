@@ -4882,6 +4882,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_STATIC_PROP_IS_SPEC_CONS
 
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_DIM_R_SPEC_CONST_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
+
 	USE_OPLINE
 
 	zval *container, *dim, *value, *result;
@@ -8926,6 +8927,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_BOOL_XOR_SPEC_CONST_CV_HANDLER
 
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_DIM_R_SPEC_CONST_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
+
 	USE_OPLINE
 
 	zval *container, *dim, *value, *result;
@@ -10940,6 +10942,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_BOOL_XOR_SPEC_CONST_TMPVAR_HAN
 
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_DIM_R_SPEC_CONST_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
+
 	USE_OPLINE
 	zend_free_op free_op2;
 	zval *container, *dim, *value, *result;
@@ -16664,6 +16667,8 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_RESET_RW_SPEC_VAR_HANDLER(Z
 	zend_free_op free_op1;
 	zval *array_ptr, *array_ref;
 
+        printf("ZEND_FE_RESET_RW_SPEC_VAR_HANDLER\n");
+        
 	SAVE_OPLINE();
 
 	if (IS_VAR == IS_VAR || IS_VAR == IS_CV) {
@@ -16806,12 +16811,41 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FE_FETCH_R_SPEC_VAR_HANDLER(ZE
 	uint32_t value_type;
 	HashTable *fe_ht;
 	HashPosition pos;
+       
+        
+        
 	Bucket *p;
 
 	array = EX_VAR(opline->op1.var);
 	SAVE_OPLINE();
 	if (EXPECTED(Z_TYPE_P(array) == IS_ARRAY)) {
 		fe_ht = Z_ARRVAL_P(array);
+                
+                if (HT_IS_COMPACT(fe_ht)) {
+                    
+                    pos = Z_FE_POS_P(array);
+                    
+                    if (UNEXPECTED(pos >= fe_ht->nNumUsed)) {
+				/* reached end of iteration */
+				goto fe_fetch_r_exit;
+                    }
+                    
+                    CompactNode* cn = &fe_ht->compactValues[pos];
+                    if (opline->result_type & (IS_TMP_VAR|IS_CV)) {
+                        if (cn->isNumeric != 0) {
+                                ZVAL_LONG(EX_VAR(opline->result.var), cn->longkey);
+                        } else {
+                                ZVAL_STR_COPY(EX_VAR(opline->result.var), cn->key);
+                        }
+                    }
+                    
+                    value = &cn->val;
+                    value_type = Z_TYPE_INFO_P(value);
+                    Z_FE_POS_P(array) = pos + 1;
+                    goto compact_ar_jump;
+                    
+                }
+                
 		pos = Z_FE_POS_P(array);
 		p = fe_ht->arData + pos;
 		while (1) {
@@ -16942,6 +16976,8 @@ fe_fetch_r_exit:
 		ZEND_VM_SET_RELATIVE_OPCODE(opline, opline->extended_value);
 		ZEND_VM_CONTINUE();
 	}
+        
+        compact_ar_jump:
 
 	if (EXPECTED(opline->op2_type == IS_CV)) {
 		zval *variable_ptr = _get_zval_ptr_cv_undef_BP_VAR_W(opline->op2.var EXECUTE_DATA_CC);
@@ -35717,6 +35753,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_STATIC_PROP_IS_SPEC_CV_C
 
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_DIM_R_SPEC_CV_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
+
 	USE_OPLINE
 
 	zval *container, *dim, *value, *result;
@@ -42138,6 +42175,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_DEC_OBJ_SPEC_CV_CV_HANDLE
 
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_DIM_R_SPEC_CV_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
+
 	USE_OPLINE
 
 	zval *container, *dim, *value, *result;
@@ -45787,6 +45825,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_POST_DEC_OBJ_SPEC_CV_TMPVAR_HA
 
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_DIM_R_SPEC_CV_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
+
 	USE_OPLINE
 	zend_free_op free_op2;
 	zval *container, *dim, *value, *result;
@@ -49224,6 +49263,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_STATIC_PROP_IS_SPEC_TMPV
 
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_DIM_R_SPEC_TMPVAR_CONST_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
+
 	USE_OPLINE
 	zend_free_op free_op1;
 	zval *container, *dim, *value, *result;
@@ -51559,6 +51599,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_BOOL_XOR_SPEC_TMPVAR_CV_HANDLE
 
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_DIM_R_SPEC_TMPVAR_CV_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
+
 	USE_OPLINE
 	zend_free_op free_op1;
 	zval *container, *dim, *value, *result;
@@ -52887,6 +52928,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_BOOL_XOR_SPEC_TMPVAR_TMPVAR_HA
 
 static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_FETCH_DIM_R_SPEC_TMPVAR_TMPVAR_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
+
 	USE_OPLINE
 	zend_free_op free_op1, free_op2;
 	zval *container, *dim, *value, *result;

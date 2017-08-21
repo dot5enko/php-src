@@ -592,9 +592,9 @@ static zend_op_array *zend_compile(int type)
 		init_op_array(op_array, type, INITIAL_OP_ARRAY_SIZE);
 		CG(active_op_array) = op_array;
 
-		if (zend_ast_process) {
+		
 			zend_ast_process(CG(ast));
-		}
+		
 
 		zend_file_context_begin(&original_file_context);
 		zend_oparray_context_begin(&original_oparray_context);

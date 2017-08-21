@@ -1935,6 +1935,9 @@ ZEND_API void zend_collect_module_handlers(void) /* {{{ */
 
 	/* Collect extensions with request startup/shutdown handlers */
 	ZEND_HASH_FOREACH_PTR(&module_registry, module) {
+                
+                //printf("helo world!\n");
+            
 		if (module->request_startup_func) {
 			startup_count++;
 		}
@@ -1968,9 +1971,15 @@ ZEND_API void zend_collect_module_handlers(void) /* {{{ */
 			module_post_deactivate_handlers[--post_deactivate_count] = module;
 		}
 	} ZEND_HASH_FOREACH_END();
-
+        
+        printf("modules registered succesfully!\n");
+        
+        printf("size of CG(class_table) [%i,%i]",CG(class_table)->nNumUsed,CG(class_table)->nTableSize);
+        
+        
 	/* Collect internal classes with static members */
 	ZEND_HASH_FOREACH_PTR(CG(class_table), ce) {
+            printf("foreach internal class table `%s`\n",ce->name->val);
 		if (ce->type == ZEND_INTERNAL_CLASS &&
 		    ce->default_static_members_count > 0) {
 		    class_count++;

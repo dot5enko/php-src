@@ -43,11 +43,17 @@
 #define HASH_FLAG_HAS_EMPTY_IND    (1<<5)
 #define HASH_FLAG_ALLOW_COW_VIOLATION (1<<6)
 
+#define HT_COMPACT_MAX_SIZE 32
+
+
 #define HT_IS_PACKED(ht) \
 	(((ht)->u.flags & HASH_FLAG_PACKED) != 0)
 
 #define HT_IS_WITHOUT_HOLES(ht) \
 	((ht)->nNumUsed == (ht)->nNumOfElements)
+
+#define HT_IS_COMPACT(ht) \
+	((ht)->nTableSize <= HT_MIN_SIZE && (ht)->nNumUsed <= HT_MIN_SIZE )
 
 #define HT_HAS_STATIC_KEYS_ONLY(ht) \
 	(((ht)->u.flags & (HASH_FLAG_PACKED|HASH_FLAG_STATIC_KEYS)) != 0)
@@ -187,6 +193,9 @@ ZEND_API zval* ZEND_FASTCALL _zend_hash_index_find(const HashTable *ht, zend_ulo
 			} \
 		} \
 	} while (0)
+
+
+    
 
 
 /* Misc */
@@ -827,15 +836,39 @@ static zend_always_inline void *zend_hash_get_current_data_ptr_ex(HashTable *ht,
 	zend_hash_get_current_data_ptr_ex(ht, &(ht)->nInternalPointer)
 
 #define ZEND_HASH_FOREACH(_ht, indirect) do { \
+                        if ((_ht)->nNumUsed == 0) { \
+                            printf("skipped iteration on first step!\n"); \
+                            break; \
+                        } \
+                        HashTable *__ht = (_ht); \
+                        const uint32_t c_end = __ht->nNumUsed; \
+                        Bucket *_p = __ht->arData; \
+                        Bucket *_end = _p + __ht->nNumUsed; \
+                        CompactNode* _cn; \
+                        uint32_t curIndex = 0; \
+                        while (1) { \
+                            zval *_z; \
+                            if (HT_IS_COMPACT(__ht)) { \
+                                if (curIndex == c_end) { break;} \
+                                _cn = &__ht->compactValues[curIndex]; \
+                                _z = &_cn->val; \
+                            } else { \
+                                 _p = _p+curIndex; \
+                                 if (_p == _end) break;\
+                                 _z = &_p->val; \
+                            }\
+                            curIndex++;\
+                            if (indirect && Z_TYPE_P(_z) == IS_INDIRECT) { \
+                                    _z = Z_INDIRECT_P(_z); \
+                            } \
+                            if (UNEXPECTED(Z_TYPE_P(_z) == IS_UNDEF)) continue;
+
+#define ZEND_HASH_COMPACT_FOREACH(_ht) do { \
 		HashTable *__ht = (_ht); \
-		Bucket *_p = __ht->arData; \
-		Bucket *_end = _p + __ht->nNumUsed; \
-		for (; _p != _end; _p++) { \
-			zval *_z = &_p->val; \
-			if (indirect && Z_TYPE_P(_z) == IS_INDIRECT) { \
-				_z = Z_INDIRECT_P(_z); \
-			} \
-			if (UNEXPECTED(Z_TYPE_P(_z) == IS_UNDEF)) continue;
+                uint32_t size = __ht->nNumUsed; \
+		for (int _i_ = 0; _i_ < size; _i_++) { \
+			zval *_z = &__ht->compactData[_i_].val; \
+
 
 #define ZEND_HASH_REVERSE_FOREACH(_ht, indirect) do { \
 		HashTable *__ht = (_ht); \
@@ -925,9 +958,13 @@ static zend_always_inline void *zend_hash_get_current_data_ptr_ex(HashTable *ht,
 
 #define ZEND_HASH_FOREACH_KEY_VAL_IND(ht, _h, _key, _val) \
 	ZEND_HASH_FOREACH(ht, 1); \
-	_h = _p->h; \
+         if (HT_IS_COMPACT(ht)) { \
+          if (_cn->isNumeric == 0) { _key = _cn->key; } else {_key = NULL; _h = _cn->longkey;}\
+        }  else { \
+        _h = _p->h; \
 	_key = _p->key; \
-	_val = _z;
+	_val = _z; \
+        }
 
 #define ZEND_HASH_FOREACH_NUM_KEY_PTR(ht, _h, _ptr) \
 	ZEND_HASH_FOREACH(ht, 0); \
@@ -936,6 +973,7 @@ static zend_always_inline void *zend_hash_get_current_data_ptr_ex(HashTable *ht,
 
 #define ZEND_HASH_FOREACH_STR_KEY_PTR(ht, _key, _ptr) \
 	ZEND_HASH_FOREACH(ht, 0); \
+        printf("ZEND_HASH_FOREACH_STR_KEY_PTR iteration\n");\
 	_key = _p->key; \
 	_ptr = Z_PTR_P(_z);
 
@@ -994,24 +1032,35 @@ static zend_always_inline void *zend_hash_get_current_data_ptr_ex(HashTable *ht,
  * (HashTable must have enough free buckets).
  */
 #define ZEND_HASH_FILL_PACKED(ht) do { \
-		HashTable *__fill_ht = (ht); \
-		Bucket *__fill_bkt = __fill_ht->arData + __fill_ht->nNumUsed; \
-		uint32_t __fill_idx = __fill_ht->nNumUsed; \
-		ZEND_ASSERT(__fill_ht->u.flags & HASH_FLAG_PACKED);
+                Bucket *__fill_bkt; \
+                uint32_t __fill_idx; \
+                HashTable *__fill_ht = (ht); \
+                if (!HT_IS_COMPACT(__fill_ht)) {\
+                    __fill_bkt = __fill_ht->arData + __fill_ht->nNumUsed; \
+                    __fill_idx = __fill_ht->nNumUsed; \
+                    ZEND_ASSERT(__fill_ht->u.flags & HASH_FLAG_PACKED); }
 
 #define ZEND_HASH_FILL_ADD(_val) do { \
-		ZVAL_COPY_VALUE(&__fill_bkt->val, _val); \
+            if (HT_IS_COMPACT(__fill_ht)) { \
+                CompactNode* _hfa_cn =  &__fill_ht->compactValues[__fill_ht->nNumUsed];\
+                _hfa_cn->isNumeric = 1;\
+                _hfa_cn->longkey = __fill_ht->nNumUsed;\
+                _hfa_cn->key = NULL; \
+                ZVAL_COPY_VALUE(&__fill_ht->compactValues[__fill_ht->nNumUsed++].val,_val);\
+                __fill_ht->nNumOfElements++;\
+            } else {\
+                ZVAL_COPY_VALUE(&__fill_bkt->val, _val); \
 		__fill_bkt->h = (__fill_idx); \
 		__fill_bkt->key = NULL; \
 		__fill_bkt++; \
-		__fill_idx++; \
+		__fill_idx++; } \
 	} while (0)
 
-#define ZEND_HASH_FILL_END() \
+#define ZEND_HASH_FILL_END() if (!HT_IS_COMPACT(__fill_ht)) { \
 		__fill_ht->nNumUsed = __fill_idx; \
 		__fill_ht->nNumOfElements = __fill_idx; \
 		__fill_ht->nNextFreeElement = __fill_idx; \
-		__fill_ht->nInternalPointer = __fill_idx ? 0 : HT_INVALID_IDX; \
+		__fill_ht->nInternalPointer = __fill_idx ? 0 : HT_INVALID_IDX;} \
 	} while (0)
 
 static zend_always_inline zval *_zend_hash_append(HashTable *ht, zend_string *key, zval *zv)

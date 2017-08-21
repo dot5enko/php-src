@@ -23,6 +23,7 @@
 #include "zend.h"
 #include "zend_globals.h"
 #include "zend_variables.h"
+#include "zend_hash.h"
 
 #if ZEND_DEBUG
 # define HT_ASSERT(ht, expr) \
@@ -90,6 +91,31 @@ static void _zend_is_inconsistent(const HashTable *ht, const char *file, int lin
 		zend_hash_do_resize(ht);					\
 	}
 
+
+#define COMPACT_GET_VAL_CHAR(_ht_si,key_c,key_len,_ht_si_result) \
+            for (uint32_t i=0; i < _ht_si->nNumUsed; i++) {\ 
+                CompactNode* cv = &_ht_si->compactValues[i]; \
+                if (cv->isNumeric == 0) { \
+                    int result = zend_binary_strcmp(key_c,key_len,cv->key->val,cv->key->len); \
+                    if (result == 0) { \
+                        _ht_si_result = &cv->val; \
+                        break; \
+                    } \
+                } \
+            } 
+#define COMPACT_GET_VAL_STRING(_ht_si,key,_ht_si_result) \
+            for (uint32_t i=0; i < _ht_si->nNumUsed; i++) {\ 
+                CompactNode* cv = &_ht_si->compactValues[i]; \
+                if (cv->isNumeric == 0) { \
+                    int result = zend_binary_strcmp(key->val,key->len,cv->key->val,cv->key->len); \
+                    if (result == 0) { \
+                        _ht_si_result = &cv->val; \
+                        break; \
+                    } \
+                } \
+            } 
+
+
 static void ZEND_FASTCALL zend_hash_do_resize(HashTable *ht);
 
 static zend_always_inline uint32_t zend_hash_check_size(uint32_t nSize)
@@ -127,10 +153,20 @@ static zend_always_inline uint32_t zend_hash_check_size(uint32_t nSize)
 #endif
 }
 
+
 static zend_always_inline void zend_hash_real_init_ex(HashTable *ht, int packed)
 {
 	HT_ASSERT_RC1(ht);
 	ZEND_ASSERT(!((ht)->u.flags & HASH_FLAG_INITIALIZED));
+        
+        if (HT_IS_COMPACT(ht)) {
+//            printf(">> allocate %i bytes for %i elements Compact\n",ht->nTableSize*sizeof(CompactNode),ht->nTableSize);     
+            ht->compactValues = (CompactNode*)((char*)(pemalloc(ht->nTableSize*sizeof(CompactNode),ht->u.flags & HASH_FLAG_PERSISTENT)));
+            (ht)->u.flags |= HASH_FLAG_INITIALIZED;
+                
+            return ;
+        }
+        
 	if (packed) {
 		HT_SET_DATA_ADDR(ht, pemalloc(HT_SIZE(ht), (ht)->u.flags & HASH_FLAG_PERSISTENT));
 		(ht)->u.flags |= HASH_FLAG_INITIALIZED | HASH_FLAG_PACKED;
@@ -172,17 +208,28 @@ static const uint32_t uninitialized_bucket[-HT_MIN_MASK] =
 
 ZEND_API void ZEND_FASTCALL _zend_hash_init(HashTable *ht, uint32_t nSize, dtor_func_t pDestructor, zend_bool persistent ZEND_FILE_LINE_DC)
 {
+    
 	GC_REFCOUNT(ht) = 1;
 	GC_TYPE_INFO(ht) = IS_ARRAY | (persistent ? 0 : (GC_COLLECTABLE << GC_FLAGS_SHIFT));
 	ht->u.flags = (persistent ? HASH_FLAG_PERSISTENT : 0) | HASH_FLAG_APPLY_PROTECTION | HASH_FLAG_STATIC_KEYS;
 	ht->nTableMask = HT_MIN_MASK;
-	HT_SET_DATA_ADDR(ht, &uninitialized_bucket);
+        
+        if (nSize < HT_COMPACT_MAX_SIZE) {
+//            printf("allocate %i bytes for %i elements Compact\n",nSize*sizeof(CompactNode),nSize);
+            ht->compactValues = 0;//(CompactNode*)((char*)(pemalloc(nSize*sizeof(CompactNode),ht->u.flags & HASH_FLAG_PERSISTENT)));
+        } else {
+            ht->compactValues = 0;
+            HT_SET_DATA_ADDR(ht, &uninitialized_bucket);
+        }
+	
 	ht->nNumUsed = 0;
 	ht->nNumOfElements = 0;
 	ht->nInternalPointer = HT_INVALID_IDX;
 	ht->nNextFreeElement = 0;
 	ht->pDestructor = pDestructor;
 	ht->nTableSize = zend_hash_check_size(nSize);
+        
+        
 }
 
 static void ZEND_FASTCALL zend_hash_packed_grow(HashTable *ht)
@@ -198,7 +245,6 @@ static void ZEND_FASTCALL zend_hash_packed_grow(HashTable *ht)
 ZEND_API void ZEND_FASTCALL zend_hash_real_init(HashTable *ht, zend_bool packed)
 {
 	IS_CONSISTENT(ht);
-
 	HT_ASSERT_RC1(ht);
 	zend_hash_real_init_ex(ht, packed);
 }
@@ -293,6 +339,10 @@ static uint32_t zend_array_recalc_elements(HashTable *ht)
 
 ZEND_API uint32_t zend_array_count(HashTable *ht)
 {
+        if (HT_IS_COMPACT(ht)) {
+            return ht->nNumUsed;
+        }
+    
 	uint32_t num;
 	if (UNEXPECTED(ht->u.v.flags & HASH_FLAG_HAS_EMPTY_IND)) {
 		num = zend_array_recalc_elements(ht);
@@ -475,7 +525,7 @@ static zend_always_inline Bucket *zend_hash_find_bucket(const HashTable *ht, zen
 	uint32_t nIndex;
 	uint32_t idx;
 	Bucket *p, *arData;
-
+        
 	h = zend_string_hash_val(key);
 	arData = ht->arData;
 	nIndex = h | ht->nTableMask;
@@ -538,15 +588,142 @@ static zend_always_inline Bucket *zend_hash_index_find_bucket(const HashTable *h
 	return NULL;
 }
 
+static zend_always_inline zval *_zend_hash_add_only(HashTable *ht, zend_string *key, zval *pData)
+{
+	zend_ulong h;
+	uint32_t nIndex;
+	uint32_t idx;
+        
+        IS_CONSISTENT(ht);
+	HT_ASSERT_RC1(ht);
+        
+        Bucket *p;
+
+	ZEND_HASH_IF_FULL_DO_RESIZE(ht);		/* If the Hash table is full, resize it */
+
+	idx = ht->nNumUsed++;
+	ht->nNumOfElements++;
+	if (ht->nInternalPointer == HT_INVALID_IDX) {
+		ht->nInternalPointer = idx;
+	}
+	zend_hash_iterators_update(ht, HT_INVALID_IDX, idx);
+	p = ht->arData + idx;
+	p->key = key;
+	if (!ZSTR_IS_INTERNED(key)) {
+		zend_string_addref(key);
+		ht->u.flags &= ~HASH_FLAG_STATIC_KEYS;
+		zend_string_hash_val(key);
+	}
+	p->h = h = ZSTR_H(key);
+	ZVAL_COPY_VALUE(&p->val, pData);
+	nIndex = h | ht->nTableMask;
+	Z_NEXT(p->val) = HT_HASH(ht, nIndex);
+	HT_HASH(ht, nIndex) = HT_IDX_TO_HASH(idx);
+
+	return &p->val;
+}
+
 static zend_always_inline zval *_zend_hash_add_or_update_i(HashTable *ht, zend_string *key, zval *pData, uint32_t flag ZEND_FILE_LINE_DC)
 {
 	zend_ulong h;
 	uint32_t nIndex;
 	uint32_t idx;
-	Bucket *p;
-
-	IS_CONSISTENT(ht);
+        
+        IS_CONSISTENT(ht);
 	HT_ASSERT_RC1(ht);
+        
+        
+        if (HT_IS_COMPACT(ht)) {
+            if (ht->nNumUsed >= ht->nTableSize) {
+                goto transform;
+                zend_error(E_ERROR,"compact array overflow!");
+            }
+            
+            if (ht->nNumUsed == HT_COMPACT_MAX_SIZE) {
+                transform:
+                printf(" TRANSFORM COMPACT ARRAY [%i,%i]\n",ht->nNumUsed,ht->nTableSize);
+
+                uint32_t effective_num = ht->nNumUsed;
+
+                // initialize the hashtable hashmap actually
+                    (ht)->nTableMask = -(ht)->nTableSize;
+                    HT_SET_DATA_ADDR(ht, pemalloc(HT_SIZE(ht), (ht)->u.flags & HASH_FLAG_PERSISTENT));
+                    (ht)->u.flags |= HASH_FLAG_INITIALIZED;
+                    if (EXPECTED(ht->nTableMask == (uint32_t)-8)) {
+                            Bucket *arData = ht->arData;
+
+                            HT_HASH_EX(arData, -8) = -1;
+                            HT_HASH_EX(arData, -7) = -1;
+                            HT_HASH_EX(arData, -6) = -1;
+                            HT_HASH_EX(arData, -5) = -1;
+                            HT_HASH_EX(arData, -4) = -1;
+                            HT_HASH_EX(arData, -3) = -1;
+                            HT_HASH_EX(arData, -2) = -1;
+                            HT_HASH_EX(arData, -1) = -1;
+                    } else {
+                            HT_HASH_RESET(ht);
+                    }
+                    printf("TRANSFORM INITIALIZED\n");
+
+
+
+                    /* make array `empty` again*/
+                    /* read `GREAT AGAIN`*/
+                    ht->nNumUsed = 0;
+                    ht->nNumOfElements = 0;
+
+
+                for (uint32_t ind = 0 ; ind < effective_num; ind++ ) {
+
+                    CompactNode* nd = &ht->compactValues[ind];  
+                    
+                    if (nd->isNumeric == 0) {
+                         printf("-> `%s`\n",nd->key->val);
+                        // TODO fix this. add proper index type. numeric or not
+                        _zend_hash_add_only(ht,nd->key,&nd->val);
+                    } else {
+                        zend_error(E_ERROR,"unsupported type of indexes when converting compact array to hashmap");
+                    }
+                }
+
+                printf("TRANSFORM FINISHED :%i added to ht\n",effective_num);            
+            } else {
+            
+                CHECK_INIT(ht, 0);
+
+                CompactNode* cnv;
+    //            
+                
+                if (ht->nNumUsed != 0) {
+                    CompactNode* prev_cnv = &ht->compactValues[ht->nNumUsed-1];
+                    if (prev_cnv->isNumeric) { 
+                        printf("adding str_index `%s` to previous long-index `%i` on position [%i]\n",key->val,prev_cnv->longkey,ht->nNumUsed);
+                    }
+                }
+                
+                cnv = &ht->compactValues[ht->nNumUsed];
+    //            
+    //            printf("sizeof compactVals :%i\n",sizeof(*(ht->compactValues)));  
+                cnv->key = key;
+                cnv->isNumeric = 0;
+
+                if (!ZSTR_IS_INTERNED(key)) {
+                    zend_string_addref(key);
+                    ht->u.flags &= ~HASH_FLAG_STATIC_KEYS;
+                    zend_string_hash_val(key);
+                }
+
+                ZVAL_COPY_VALUE(&cnv->val, pData);
+    //            
+                //printf(" adding `%s`:%i to compact array\n",key->val,key->len);
+
+                ht->nNumUsed++;
+                ht->nNumOfElements++;
+
+                return &cnv->val;
+            }
+        }
+	Bucket *p;
 
 	if (UNEXPECTED(!(ht->u.flags & HASH_FLAG_INITIALIZED))) {
 		CHECK_INIT(ht, 0);
@@ -710,6 +887,88 @@ static zend_always_inline zval *_zend_hash_index_add_or_update_i(HashTable *ht, 
 
 	IS_CONSISTENT(ht);
 	HT_ASSERT_RC1(ht);
+        
+        
+        if (HT_IS_COMPACT(ht)) {
+            
+            if (ht->nNumUsed == HT_COMPACT_MAX_SIZE) {
+                 zend_error(E_ERROR,">>>>>>>>>>>>>> HOLY SHIT. overflow! \n");
+            }
+            
+            if (ht->nNumUsed >= ht->nTableSize) {
+                
+                zend_error(E_ERROR,"HOLLY SHIT !OVERFLOW OF ITEMS\n ");
+            }
+            
+            
+            CHECK_INIT(ht, 0);
+            
+            CompactNode* cnv;
+//            
+            cnv = &ht->compactValues[ht->nNumUsed];
+//            
+//            printf("sizeof compactVals :%i\n",sizeof(*(ht->compactValues)));  
+            
+            printf(" adding long-index `%i` to compact array on pos %i\n",h,ht->nNumUsed);
+            if (flag &  (HASH_ADD_NEW|HASH_ADD_NEXT)) {
+                if (h == 0) {
+                    h = ht->nNumUsed;
+                    zend_error(E_NOTICE,"create new index %i",h);
+                }
+            };
+            
+            cnv->isNumeric = 1;
+            cnv->longkey = h;
+            
+            ZVAL_COPY_VALUE(&cnv->val, pData);            
+            
+            ht->nNumUsed++;
+            ht->nNumOfElements++;
+        
+            return &cnv->val;
+        } /* else if (ht->nNumUsed == HT_COMPACT_MAX_SIZE) {
+            
+            printf(" TRANSFORM COMPACT ARRAY\n");
+            
+            uint32_t effective_num = ht->nNumUsed;
+            
+            // initialize the hashtable hashmap actually
+                (ht)->nTableMask = -(ht)->nTableSize;
+		HT_SET_DATA_ADDR(ht, pemalloc(HT_SIZE(ht), (ht)->u.flags & HASH_FLAG_PERSISTENT));
+		(ht)->u.flags |= HASH_FLAG_INITIALIZED;
+		if (EXPECTED(ht->nTableMask == (uint32_t)-8)) {
+			Bucket *arData = ht->arData;
+
+			HT_HASH_EX(arData, -8) = -1;
+			HT_HASH_EX(arData, -7) = -1;
+			HT_HASH_EX(arData, -6) = -1;
+			HT_HASH_EX(arData, -5) = -1;
+			HT_HASH_EX(arData, -4) = -1;
+			HT_HASH_EX(arData, -3) = -1;
+			HT_HASH_EX(arData, -2) = -1;
+			HT_HASH_EX(arData, -1) = -1;
+		} else {
+			HT_HASH_RESET(ht);
+		}
+                printf("TRANSFORM INITIALIZED\n");
+                
+                
+                
+                // make array `empty` again
+                // read `GREAT AGAIN`
+                ht->nNumUsed = 0;
+                ht->nNumOfElements = 0;
+            
+            
+            for (uint32_t ind = 0 ; ind < effective_num; ind++ ) {
+                
+                CompactNode* nd = &ht->compactValues[ind];                 
+                _zend_hash_add_only(ht,nd->key,&nd->val);
+            }
+                
+            printf("TRANSFORM FINISHED :%i added to ht\n",effective_num);            
+        } */
+        
 
 	if (UNEXPECTED(!(ht->u.flags & HASH_FLAG_INITIALIZED))) {
 		CHECK_INIT(ht, h < ht->nTableSize);
@@ -806,6 +1065,7 @@ add_to_hash:
 	p = ht->arData + idx;
 	p->h = h;
 	p->key = NULL;
+        
 	nIndex = h | ht->nTableMask;
 	ZVAL_COPY_VALUE(&p->val, pData);
 	Z_NEXT(p->val) = HT_HASH(ht, nIndex);
@@ -846,7 +1106,6 @@ ZEND_API zval* ZEND_FASTCALL _zend_hash_next_index_insert_new(HashTable *ht, zva
 
 static void ZEND_FASTCALL zend_hash_do_resize(HashTable *ht)
 {
-
 	IS_CONSISTENT(ht);
 	HT_ASSERT_RC1(ht);
 
@@ -855,6 +1114,10 @@ static void ZEND_FASTCALL zend_hash_do_resize(HashTable *ht)
 	} else if (ht->nTableSize < HT_MAX_SIZE) {	/* Let's double the table size */
 		void *new_data, *old_data = HT_GET_DATA_ADDR(ht);
 		uint32_t nSize = ht->nTableSize + ht->nTableSize;
+                
+                
+                 printf("resize array to %i\n",nSize);
+                
 		Bucket *old_buckets = ht->arData;
 
 		new_data = pemalloc(HT_SIZE_EX(nSize, -nSize), ht->u.flags & HASH_FLAG_PERSISTENT);
@@ -1015,7 +1278,6 @@ static zend_always_inline void _zend_hash_del_el(HashTable *ht, uint32_t idx, Bu
 			}
 	 	}
 	}
-
 	_zend_hash_del_el_ex(ht, idx, p, prev);
 }
 
@@ -1221,7 +1483,12 @@ ZEND_API void ZEND_FASTCALL zend_hash_destroy(HashTable *ht)
 
 	IS_CONSISTENT(ht);
 	HT_ASSERT(ht, GC_REFCOUNT(ht) <= 1);
-
+        
+        if (HT_IS_COMPACT(ht)) {
+            //clean actually 
+            return;
+        }
+        
 	if (ht->nNumUsed) {
 		p = ht->arData;
 		end = p + ht->nNumUsed;
@@ -1493,6 +1760,10 @@ ZEND_API void ZEND_FASTCALL zend_hash_graceful_reverse_destroy(HashTable *ht)
 
 ZEND_API void ZEND_FASTCALL zend_hash_apply(HashTable *ht, apply_func_t apply_func)
 {
+        if (HT_IS_COMPACT(ht)) {
+            return;
+        }
+        
 	uint32_t idx;
 	Bucket *p;
 	int result;
@@ -1653,7 +1924,6 @@ ZEND_API void ZEND_FASTCALL zend_hash_copy(HashTable *target, HashTable *source,
 	}
 }
 
-
 static zend_always_inline int zend_array_dup_element(HashTable *source, HashTable *target, uint32_t idx, Bucket *p, Bucket *q, int packed, int static_keys, int with_holes)
 {
 	zval *data = &p->val;
@@ -1708,6 +1978,42 @@ static zend_always_inline int zend_array_dup_element(HashTable *source, HashTabl
 	return 1;
 }
 
+static zend_always_inline int zend_array_dup_compact_element(HashTable *source, HashTable *target, uint32_t idx)
+{   
+    
+        CompactNode* sn = &source->compactValues[idx];
+        CompactNode* tn = &target->compactValues[idx];
+    
+	zval *data = &sn->val;
+        
+        tn->isNumeric = sn->isNumeric;
+        if (sn->isNumeric == 1) {
+            tn->longkey = sn->longkey;
+        } else {
+            tn->key = zend_string_copy(sn->key);
+        }
+        
+	do {
+		if (Z_OPT_REFCOUNTED_P(data)) {
+			if (Z_ISREF_P(data) && Z_REFCOUNT_P(data) == 1 &&
+			    (Z_TYPE_P(Z_REFVAL_P(data)) != IS_ARRAY ||
+			      Z_ARRVAL_P(Z_REFVAL_P(data)) != source)) {
+				data = Z_REFVAL_P(data);
+				if (!Z_OPT_REFCOUNTED_P(data)) {
+					break;
+				}
+			}
+			Z_ADDREF_P(data);
+		}
+	} while (0);
+        
+        
+        
+	ZVAL_COPY_VALUE(&tn->val, data);
+        
+	return 1;
+}
+
 static zend_always_inline void zend_array_dup_packed_elements(HashTable *source, HashTable *target, int with_holes)
 {
 	Bucket *p = source->arData;
@@ -1726,6 +2032,17 @@ static zend_always_inline void zend_array_dup_packed_elements(HashTable *source,
 
 static zend_always_inline uint32_t zend_array_dup_elements(HashTable *source, HashTable *target, int static_keys, int with_holes)
 {
+    
+        if (HT_IS_COMPACT(source)) {
+             
+            uint32_t len = source->nNumUsed;
+            
+            for (uint32_t i = 0; i < len; i++) {
+                zend_array_dup_compact_element(source,target,i);
+            }
+            return len;
+        }
+    
 	uint32_t idx = 0;
 	Bucket *p = source->arData;
 	Bucket *q = target->arData;
@@ -1760,7 +2077,7 @@ ZEND_API HashTable* ZEND_FASTCALL zend_array_dup(HashTable *source)
 	IS_CONSISTENT(source);
 
 	ALLOC_HASHTABLE(target);
-	GC_REFCOUNT(target) = 1;
+	GC_REFCOUNT(target) = 1;    
 	GC_TYPE_INFO(target) = IS_ARRAY | (GC_COLLECTABLE << GC_FLAGS_SHIFT);
 
 	target->nTableSize = source->nTableSize;
@@ -1774,7 +2091,18 @@ ZEND_API HashTable* ZEND_FASTCALL zend_array_dup(HashTable *source)
 		target->nNextFreeElement = 0;
 		target->nInternalPointer = HT_INVALID_IDX;
 		HT_SET_DATA_ADDR(target, &uninitialized_bucket);
-	} else if (GC_FLAGS(source) & IS_ARRAY_IMMUTABLE) {
+	} else if (HT_IS_COMPACT(source)) {
+            target->u.flags = (source->u.flags & ~(HASH_FLAG_INITIALIZED|HASH_FLAG_PACKED|HASH_FLAG_PERSISTENT|ZEND_HASH_APPLY_COUNT_MASK)) | HASH_FLAG_APPLY_PROTECTION | HASH_FLAG_STATIC_KEYS;
+            target->nTableMask = source->nTableMask;
+            target->nNumUsed = source->nNumUsed;
+            target->nNumOfElements = source->nNumOfElements;
+            target->nNextFreeElement = 0; // not used
+            target->nInternalPointer = HT_INVALID_IDX; // not used
+            
+            zend_hash_real_init_ex(target,0);
+            zend_array_dup_elements(source, target, 0, 0);
+            
+        } else if (GC_FLAGS(source) & IS_ARRAY_IMMUTABLE) {
 		target->u.flags = (source->u.flags & ~HASH_FLAG_PERSISTENT) | HASH_FLAG_APPLY_PROTECTION;
 		target->nTableMask = source->nTableMask;
 		target->nNumUsed = source->nNumUsed;
@@ -1950,16 +2278,45 @@ ZEND_API void ZEND_FASTCALL zend_hash_merge_ex(HashTable *target, HashTable *sou
 /* Returns the hash table data if found and NULL if not. */
 ZEND_API zval* ZEND_FASTCALL zend_hash_find(const HashTable *ht, zend_string *key)
 {
-	Bucket *p;
+        
+            if (ht->nNumUsed == 0) {
+                return NULL;
+            }
+//    
+        if (HT_IS_COMPACT(ht)) {
+            // foreach over items :)
+            //printf("CHECK for `%s` iteration:%i\n",key->val,key->len);
+            
+            zval* res = NULL;            
+            
+            COMPACT_GET_VAL_STRING(ht,key,res);
+            
+            return res;
+        }
+    
+        Bucket *p;
 
 	IS_CONSISTENT(ht);
-
+        
 	p = zend_hash_find_bucket(ht, key);
 	return p ? &p->val : NULL;
 }
 
 ZEND_API zval* ZEND_FASTCALL zend_hash_str_find(const HashTable *ht, const char *str, size_t len)
 {
+//        printf("zend_hash_str_find `%s`\n",str);
+        
+        if (ht->nNumUsed == 0) {
+            return NULL;
+        }
+        
+        if (HT_IS_COMPACT(ht)) {          
+            zval* result = NULL;
+            
+            COMPACT_GET_VAL_CHAR(ht,str,len,result);
+            return result;
+        }
+    
 	zend_ulong h;
 	Bucket *p;
 
@@ -1981,12 +2338,25 @@ ZEND_API zend_bool ZEND_FASTCALL zend_hash_exists(const HashTable *ht, zend_stri
 }
 
 ZEND_API zend_bool ZEND_FASTCALL zend_hash_str_exists(const HashTable *ht, const char *str, size_t len)
-{
+{   
+    
+    if (HT_IS_COMPACT(ht)) {
+        
+        zval * res = NULL;
+        COMPACT_GET_VAL_CHAR(ht,str,len,res);
+        
+        return res?1:0;
+        
+    }
+    
 	zend_ulong h;
 	Bucket *p;
 
 	IS_CONSISTENT(ht);
 
+        
+        
+        
 	h = zend_inline_hash_func(str, len);
 	p = zend_hash_str_find_bucket(ht, str, len, h);
 	return p ? 1 : 0;
@@ -2014,6 +2384,25 @@ ZEND_API zval* ZEND_FASTCALL zend_hash_index_find(const HashTable *ht, zend_ulon
 
 ZEND_API zval* ZEND_FASTCALL _zend_hash_index_find(const HashTable *ht, zend_ulong h)
 {
+    if (HT_IS_COMPACT(ht)) {          
+            //printf("WHERE THE HELL IS THIS STRING! len:%i\n",sizeof(zend_ulong));
+            
+            uint32_t s = ht->nNumUsed;
+            
+            for (uint32_t i = 0; i < s ; i++) {
+                
+                CompactNode* cv = &ht->compactValues[i];
+                
+                if ( cv->isNumeric && cv->longkey == h) {
+                    return &cv->val;
+                }
+            }
+            
+            //printf("EXCEPTION. ELEMENT NOT FOUND");
+            return NULL;
+    }
+     
+    
 	Bucket *p;
 
 	IS_CONSISTENT(ht);
@@ -2243,6 +2632,13 @@ ZEND_API void zend_hash_bucket_packed_swap(Bucket *p, Bucket *q)
 
 ZEND_API int ZEND_FASTCALL zend_hash_sort_ex(HashTable *ht, sort_func_t sort, compare_func_t compar, zend_bool renumber)
 {
+    
+    // TODO use fast hash tables
+        
+        if (HT_IS_COMPACT(ht)) {
+            return SUCCESS;
+        }
+    
 	Bucket *p;
 	uint32_t i, j;
 

@@ -1607,10 +1607,11 @@ ZEND_VM_HANDLER(176, ZEND_FETCH_STATIC_PROP_IS, CONST|TMPVAR|CV, UNUSED|CLASS_FE
 
 ZEND_VM_HANDLER(81, ZEND_FETCH_DIM_R, CONST|TMPVAR|CV, CONST|TMPVAR|CV)
 {
+    
 	USE_OPLINE
 	zend_free_op free_op1, free_op2;
-	zval *container, *dim, *value, *result;
-
+	zval *container, *dim, *value, *result;        
+        
 	SAVE_OPLINE();
 	container = GET_OP1_ZVAL_PTR_UNDEF(BP_VAR_R);
 	dim = GET_OP2_ZVAL_PTR_UNDEF(BP_VAR_R);
